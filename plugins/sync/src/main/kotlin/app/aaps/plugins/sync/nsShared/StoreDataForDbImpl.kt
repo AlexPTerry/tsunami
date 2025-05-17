@@ -96,7 +96,7 @@ class StoreDataForDbImpl @Inject constructor(
     private val durationUpdated = HashMap<String, Long>()
     private val ended = HashMap<String, Long>()
 
-    private val pause = 1000L // to slow down db operations
+    private val pause = 3000L // to slow down db operations
 
     fun <T> HashMap<T, Long>.inc(key: T) =
         synchronized(this) {
@@ -111,7 +111,6 @@ class StoreDataForDbImpl @Inject constructor(
                 persistenceLayer.insertCgmSourceData(Sources.NSClient, glucoseValues.toMutableList(), emptyList(), null)
                     .blockingGet()
                     .also { result ->
-                        glucoseValues.clear()
                         result.updated.forEach {
                             nsClientSource.detectSource(it)
                             updated.inc(GV::class.java.simpleName)
@@ -151,10 +150,10 @@ class StoreDataForDbImpl @Inject constructor(
         rxBus.send(EventNSClientNewLog("● DONE PROCESSING FOOD", ""))
     }
 
-    override fun storeTreatmentsToDb() {
+    override fun storeTreatmentsToDb(fullSync: Boolean) {
         synchronized(boluses) {
             if (boluses.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsBolus(boluses.toMutableList())
+                disposable += persistenceLayer.syncNsBolus(boluses.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(BS::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(BS::class.java.simpleName) }
@@ -170,7 +169,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(carbs) {
             if (carbs.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsCarbs(carbs.toMutableList())
+                disposable += persistenceLayer.syncNsCarbs(carbs.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(CA::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(CA::class.java.simpleName) }
@@ -186,7 +185,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(temporaryTargets) {
             if (temporaryTargets.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsTemporaryTargets(temporaryTargets.toMutableList())
+                disposable += persistenceLayer.syncNsTemporaryTargets(temporaryTargets.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(TT::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(TT::class.java.simpleName) }
@@ -203,7 +202,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(temporaryBasals) {
             if (temporaryBasals.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsTemporaryBasals(temporaryBasals.toMutableList())
+                disposable += persistenceLayer.syncNsTemporaryBasals(temporaryBasals.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(TB::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(TB::class.java.simpleName) }
@@ -220,7 +219,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(effectiveProfileSwitches) {
             if (effectiveProfileSwitches.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsEffectiveProfileSwitches(effectiveProfileSwitches.toMutableList())
+                disposable += persistenceLayer.syncNsEffectiveProfileSwitches(effectiveProfileSwitches.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(EPS::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(EPS::class.java.simpleName) }
@@ -235,7 +234,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(profileSwitches) {
             if (profileSwitches.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsProfileSwitches(profileSwitches.toMutableList())
+                disposable += persistenceLayer.syncNsProfileSwitches(profileSwitches.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(PS::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(PS::class.java.simpleName) }
@@ -265,7 +264,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(therapyEvents) {
             if (therapyEvents.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsTherapyEvents(therapyEvents.toMutableList())
+                disposable += persistenceLayer.syncNsTherapyEvents(therapyEvents.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(TE::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(TE::class.java.simpleName) }
@@ -281,7 +280,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(offlineEvents) {
             if (offlineEvents.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsOfflineEvents(offlineEvents.toMutableList())
+                disposable += persistenceLayer.syncNsOfflineEvents(offlineEvents.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         repeat(result.inserted.size) { inserted.inc(OE::class.java.simpleName) }
                         repeat(result.invalidated.size) { invalidated.inc(OE::class.java.simpleName) }
@@ -298,7 +297,7 @@ class StoreDataForDbImpl @Inject constructor(
 
         synchronized(extendedBoluses) {
             if (extendedBoluses.isNotEmpty()) {
-                disposable += persistenceLayer.syncNsExtendedBoluses(extendedBoluses.toMutableList())
+                disposable += persistenceLayer.syncNsExtendedBoluses(extendedBoluses.toMutableList(), doLog = !fullSync)
                     .subscribeBy { result ->
                         result.inserted.forEach {
                             if (it.isEmulatingTempBasal) virtualPump.fakeDataDetected = true
