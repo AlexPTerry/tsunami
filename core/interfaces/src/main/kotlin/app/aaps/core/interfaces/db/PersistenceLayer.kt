@@ -172,9 +172,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param boluses list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsBolus(boluses: List<BS>): Single<TransactionResult<BS>>
+    fun syncNsBolus(boluses: List<BS>, doLog: Boolean): Single<TransactionResult<BS>>
 
     /**
      * Update NS id' in database
@@ -306,9 +307,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param carbs list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsCarbs(carbs: List<CA>): Single<TransactionResult<CA>>
+    fun syncNsCarbs(carbs: List<CA>, doLog: Boolean): Single<TransactionResult<CA>>
 
     /**
      * Update NS id' in database
@@ -522,9 +524,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param effectiveProfileSwitches list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsEffectiveProfileSwitches(effectiveProfileSwitches: List<EPS>): Single<TransactionResult<EPS>>
+    fun syncNsEffectiveProfileSwitches(effectiveProfileSwitches: List<EPS>, doLog: Boolean): Single<TransactionResult<EPS>>
 
     /**
      * Update NS id' in database
@@ -625,9 +628,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param profileSwitches list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsProfileSwitches(profileSwitches: List<PS>): Single<TransactionResult<PS>>
+    fun syncNsProfileSwitches(profileSwitches: List<PS>, doLog: Boolean): Single<TransactionResult<PS>>
 
     /**
      * Update NS id' in database
@@ -726,9 +730,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param temporaryBasals list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsTemporaryBasals(temporaryBasals: List<TB>): Single<TransactionResult<TB>>
+    fun syncNsTemporaryBasals(temporaryBasals: List<TB>, doLog: Boolean): Single<TransactionResult<TB>>
 
     /**
      * Update NS id' in database
@@ -873,9 +878,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param extendedBoluses list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsExtendedBoluses(extendedBoluses: List<EB>): Single<TransactionResult<EB>>
+    fun syncNsExtendedBoluses(extendedBoluses: List<EB>, doLog: Boolean): Single<TransactionResult<EB>>
 
     /**
      * Update NS id' in database
@@ -954,9 +960,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param temporaryTargets list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsTemporaryTargets(temporaryTargets: List<TT>): Single<TransactionResult<TT>>
+    fun syncNsTemporaryTargets(temporaryTargets: List<TT>, doLog: Boolean): Single<TransactionResult<TT>>
 
     /**
      * Update NS id' in database
@@ -1037,9 +1044,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param therapyEvents list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsTherapyEvents(therapyEvents: List<TE>): Single<TransactionResult<TE>>
+    fun syncNsTherapyEvents(therapyEvents: List<TE>, doLog: Boolean): Single<TransactionResult<TE>>
 
     /**
      * Update NS id' in database
@@ -1118,9 +1126,10 @@ interface PersistenceLayer {
      * Store records coming from NS to database
      *
      * @param offlineEvents list of records
+     * @param doLog create UserEntry if true
      * @return List of inserted/updated/invalidated records
      */
-    fun syncNsOfflineEvents(offlineEvents: List<OE>): Single<TransactionResult<OE>>
+    fun syncNsOfflineEvents(offlineEvents: List<OE>, doLog: Boolean): Single<TransactionResult<OE>>
 
     /**
      * Update NS id' in database
