@@ -18,6 +18,7 @@ import app.aaps.core.interfaces.smoothing.Smoothing
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.kotlin.plusAssign
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
@@ -115,22 +116,13 @@ class UnscentedKalmanFilterPlugin @Inject constructor(
     //private val R_MAX = 144.0   // Max ~12 mg/dl std dev permissible - poor sensor; cap prevents filter from losing trust in sensor entirely
     private val R_MAX = 196.0
     private val R_EFF_MAX = 400.0
-    // R adaptation parameters - DUAL RATE SYSTEM
+    // R adaptation parameters
     private val innovationWindow = 48  // 150 minutes for stable statistics
-    private val FAST_INCREASE_RATE = 1.10   // 10% increase (abrupt degradation)
-    private val FAST_DECREASE_RATE = 0.90   // 10% decrease (abrupt improvement)
-    private val SLOW_INCREASE_RATE = 1.03   // 2% increase (gradual drift)
-    private val SLOW_DECREASE_RATE = 0.97   // 2% decrease (gradual improvement)
     private val RATE_DAMPING = 0.98         // 6% rate decay per step
 
     // Chi-squared based outlier detection (99.99% confidence, 1 DOF)
     private val CHI_SQUARED_THRESHOLD = 15.13  // Statistically rigorous
     private val OUTLIER_ABSOLUTE = 65.0        // Absolute safety limit (mg/dL)
-
-    // Consecutive outlier handling
-    private val MAX_CONSECUTIVE_OUTLIERS = 1   // Force acceptance after 15 minutes
-    private val MIN_R_MULTIPLIER = 2.0         // Minimum R inflation on forced update
-    private val MAX_R_MULTIPLIER = 4.0         // Maximum R inflation on forced update
 
     // Covariance limits (tighter for faster recovery)
     private val MAX_GLUCOSE_VARIANCE = 400.0  // Max 20 mg/dL std dev
@@ -185,6 +177,7 @@ class UnscentedKalmanFilterPlugin @Inject constructor(
     private val resetRequested = AtomicBoolean(false)
     private val disposable = CompositeDisposable()
     private val sensorChangeDisposables = CompositeDisposable()
+    private val lastLiveLogTimestampMs = AtomicLong(0)
 
     // ============================================================
     // INITIALIZATION
@@ -202,8 +195,15 @@ class UnscentedKalmanFilterPlugin @Inject constructor(
 
         // Load persisted parameters
         loadPersistedParameters()
+    }
 
-        // Subscribe to sensor change events
+    override fun onStart() {
+        super.onStart()
+
+        // Ensure we don't duplicate subscriptions if plugin restarts.
+        disposable.clear()
+        sensorChangeDisposables.clear()
+
         subscribeToSensorChanges()
         loadLastSensorChange()
     }
@@ -290,9 +290,6 @@ private fun savePersistedParameters() {
      * Queries last 30 days of therapy events
      */
     private fun loadLastSensorChange() {
-        // Clear any pending queries first
-        sensorChangeDisposables.clear()
-
         sensorChangeDisposables += persistenceLayer
             .getTherapyEventDataFromTime(System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000, false)
             .observeOn(aapsSchedulers.io)
@@ -322,9 +319,6 @@ private fun savePersistedParameters() {
      * Called when EventTherapyEventChange is received
      */
     private fun checkForSensorChange() {
-        // Clear any pending queries first
-        sensorChangeDisposables.clear()
-
         sensorChangeDisposables += persistenceLayer
             .getTherapyEventDataFromTime(lastSensorChangeTimestamp, false)
             .observeOn(aapsSchedulers.io)
@@ -717,14 +711,19 @@ private fun savePersistedParameters() {
             }
 
             // Logging with effective parameters for transparency.
-            aapsLogger.warn(
-                LTag.GLUCOSE,
-                "UKF: live R=${String.format("%.1f", R)}, R_eff=${String.format("%.1f", R_eff)}," +
-                " BG=${String.format("%.0f", z)}, predBG=${String.format("%.0f", xPred[0])}," +
-                " innov=${String.format("%.1f", innovation)}, |ν|/σ=${String.format("%.1f", abs(norm))}," +
-                " qScale=${String.format("%.1f", qScale)}," +
-                " P[0]=${String.format("%.1f", P[0])}, P[3]=${String.format("%.4f", P[3])}"
-            )
+            // Keep live diagnostics lightweight: emit at most once every 60s.
+            val nowMs = System.currentTimeMillis()
+            val lastLoggedAt = lastLiveLogTimestampMs.get()
+            if (nowMs - lastLoggedAt >= 60_000 && lastLiveLogTimestampMs.compareAndSet(lastLoggedAt, nowMs)) {
+                aapsLogger.debug(
+                    LTag.GLUCOSE,
+                    "UKF: live R=${String.format("%.1f", R)}, R_eff=${String.format("%.1f", R_eff)}," +
+                        " BG=${String.format("%.0f", z)}, predBG=${String.format("%.0f", xPred[0])}," +
+                        " innov=${String.format("%.1f", innovation)}, |ν|/σ=${String.format("%.1f", abs(norm))}," +
+                        " qScale=${String.format("%.1f", qScale)}," +
+                        " P[0]=${String.format("%.1f", P[0])}, P[3]=${String.format("%.4f", P[3])}"
+                )
+            }
 
             val resultIdx = i - startIdx
             forwardResults[resultIdx] = x[0]
@@ -767,35 +766,6 @@ private fun savePersistedParameters() {
             data[i].trendArrow = if (i == startIdx) computeTrendArrow(x[1]) else TrendArrow.NONE
         }
     }
-
-
-    // ============================================================
-    // OUTLIER DETECTION
-    // ============================================================
-
-    /**
-     * Chi-squared based outlier detection (99.99% confidence)
-     *
-     * Under correctly tuned filter, squared Mahalanobis distance follows χ²(1).
-     * Threshold of 15.13 corresponds to 99.99% confidence (only 0.01% false rejections).
-     *
-     * The innovation variance (P[0] + R) automatically adapts the threshold when
-     * filter uncertainty increases, preventing lock-out.
-     */
-    private fun isOutlier(innovation: Double, innovationVariance: Double, P: DoubleArray): Boolean {
-        val mahalanobisSq = (innovation * innovation) / innovationVariance
-
-        if (mahalanobisSq > CHI_SQUARED_THRESHOLD || abs(innovation) > OUTLIER_ABSOLUTE) {
-            aapsLogger.debug(LTag.GLUCOSE,
-                "UKF: Outlier detected - χ²=${String.format("%.2f", mahalanobisSq)}, " +
-                "innovation=${String.format("%.1f", innovation)}, " +
-                "P[0]=${String.format("%.1f", P[0])}")
-            return true
-        }
-
-        return false
-    }
-
     // ============================================================
     // ADAPTIVE R ESTIMATION
     // ============================================================
@@ -846,41 +816,6 @@ private fun savePersistedParameters() {
 
         return newR.coerceIn(R_MIN, R_MAX)  // CHANGED: raised R_MIN floor applied here
     }
-
-
-    /**
-     * Detect abrupt noise change using F-test on variance ratio
-     *
-     * Compares recent (last 10 samples) vs historic (previous 10 samples) variance.
-     * F(0.01, 9, 9) ≈ 5.35 critical value for 99% confidence.
-     */
-    /*
-    private fun detectAbruptNoiseChange(innovations: ArrayDeque<Double>): Boolean {
-        if (innovations.size < 20) return false
-
-        // Use 8-sample windows with 4-sample protective gap
-        val recent = innovations.take(8)          // Last 40 minutes
-        val historic = innovations.drop(12).take(8)  // 60-100 minutes ago
-
-        val recentVar = recent.variance()
-        val historicVar = historic.variance()
-
-        if (historicVar < 0.1 || recentVar < 0.1) return false
-
-        val ratio = recentVar / historicVar
-
-        // F(0.995, 7, 7) critical values for 99% confidence
-        return ratio > 10.0 || ratio < 0.10
-    }
-
-     */
-
-    private fun List<Double>.variance(): Double {
-        if (size < 2) return 0.0
-        val mean = average()
-        return map { (it - mean) * (it - mean) }.average()
-    }
-
     // ============================================================
     // TREND ARROW COMPUTATION
     // ============================================================
@@ -1191,29 +1126,6 @@ private fun savePersistedParameters() {
             (it[it.size / 2] + it[(it.size - 1) / 2]) / 2
         else
             it[it.size / 2]
-    }
-
-    /**
-     * Find the valid data window by checking for gaps and errors
-     *
-     * Scans backward through data looking for:
-     * - Large time gaps (>12 min)
-     * - Invalid time differences (<2 min)
-     * - Error states (value = 38.0)
-     *
-     * @param data List of glucose readings, ordered newest to oldest
-     * @return Number of valid consecutive readings from the start
-     */
-    private fun findValidWindow(data: List<InMemoryGlucoseValue>): Int {
-        var windowSize = data.size
-        for (i in 0 until windowSize - 1) {
-            val timeDiff = (data[i].timestamp - data[i + 1].timestamp) / (1000.0 * 60.0)
-            if (timeDiff >= MAJOR_GAP_THRESHOLD || timeDiff < 2.0 || data[i].value == 38.0) {
-                windowSize = i + 1
-                break
-            }
-        }
-        return windowSize
     }
 
     /**

@@ -68,7 +68,7 @@
             style="@style/ButtonSmallFontStyle"
             android:layout_width="0px"
             android:layout_height="fill_parent"
-            android:layout_marginEnd="-2dp"
+            android:layout_marginEnd="@dimen/gray_material_button_margin_horizontal"
             android:layout_weight="0.5"
             android:drawableTop="@drawable/ic_tsunami"
             android:text="@string/overview_tsunami_label"
