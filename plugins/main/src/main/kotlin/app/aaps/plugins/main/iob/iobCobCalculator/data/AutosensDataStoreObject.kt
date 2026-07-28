@@ -48,6 +48,8 @@ class AutosensDataStoreObject : AutosensDataStore {
     override fun clone(): AutosensDataStore =
         AutosensDataStoreObject().also {
             synchronized(dataLock) {
+                it.referenceTime = this.referenceTime
+                it.lastUsed5minCalculation = this.lastUsed5minCalculation
                 it.bgReadings = this.bgReadings.toMutableList()
                 it.autosensDataTable = LongSparseArray<AutosensData>(this.autosensDataTable.size).apply { putAll(this@AutosensDataStoreObject.autosensDataTable) }
                 it.smoothedData = this.smoothedData?.map { value -> value.copy() }?.toMutableList()

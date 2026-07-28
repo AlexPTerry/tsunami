@@ -3,6 +3,7 @@ package app.aaps.workflow
 import android.content.Context
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.rx.events.Event
@@ -39,7 +40,8 @@ class InvokeLoopWorker(
 
         if (data.cause !is EventNewBG) return Result.success(workDataOf("Result" to "no calculation needed"))
         val glucoseValue = iobCobCalculator.ads.actualBg() ?: return Result.success(workDataOf("Result" to "bg outdated"))
-        if (glucoseValue.timestamp <= loop.lastBgTriggeredRun) return Result.success(workDataOf("Result" to "already looped with that value"))
+        if (loop.lastBgTriggeredRun != 0L && glucoseValue.timestamp < loop.lastBgTriggeredRun + T.mins(5).msecs())
+            return Result.success(workDataOf("Result" to "last loop run was less than 5 minutes ago"))
         loop.lastBgTriggeredRun = glucoseValue.timestamp
         loop.invoke("Calculation for $glucoseValue", true)
         return Result.success()

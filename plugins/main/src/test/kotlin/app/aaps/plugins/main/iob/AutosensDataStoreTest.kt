@@ -1525,4 +1525,39 @@ class AutosensDataStoreTest : TestBase() {
         ads.autosensDataTable.append(now - T.mins(20).msecs(), AutosensDataObject(aapsLogger, preferences, dateUtil).apply { time = now - T.mins(20).msecs() })
         assertThat(ads.getLastAutosensData("test", aapsLogger, dateUtilMocked)?.time).isEqualTo(now - 1)
     }
+
+    @Test
+    fun oneMinuteDataKeepsFiveMinuteBucketCadenceAfterClone() {
+        fun readingsEndingAt(minute: Long): MutableList<GV> =
+            (0L..20L).map { offset ->
+                GV(
+                    raw = 0.0,
+                    noise = 0.0,
+                    value = 100.0,
+                    timestamp = T.mins(minute - offset).msecs(),
+                    sourceSensor = SourceSensor.UNKNOWN,
+                    trendArrow = TrendArrow.FLAT
+                )
+            }.toMutableList()
+
+        var ads = AutosensDataStoreObject()
+        ads.bgReadings = readingsEndingAt(20L)
+        ads.createBucketedData(aapsLogger, dateUtil)
+        val firstControlTimestamp = ads.lastBg()?.timestamp
+
+        ads = ads.clone() as AutosensDataStoreObject
+        assertThat(ads.referenceTime).isEqualTo(T.mins(20).msecs())
+        assertThat(ads.lastUsed5minCalculation).isFalse()
+
+        for (minute in 21L..24L) {
+            ads.bgReadings = readingsEndingAt(minute)
+            ads.createBucketedData(aapsLogger, dateUtil)
+            assertThat(ads.lastBg()?.timestamp).isEqualTo(firstControlTimestamp)
+            ads = ads.clone() as AutosensDataStoreObject
+        }
+
+        ads.bgReadings = readingsEndingAt(25L)
+        ads.createBucketedData(aapsLogger, dateUtil)
+        assertThat(ads.lastBg()?.timestamp).isEqualTo(firstControlTimestamp!! + T.mins(5).msecs())
+    }
 }
