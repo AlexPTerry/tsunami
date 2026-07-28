@@ -40,13 +40,17 @@ class PrepareBucketedDataWorker(
 
         val toTime = data.overviewData.toTime
         val fromTime = data.overviewData.fromTime
-        val bucketedData = data.iobCobCalculator.ads.getBucketedDataTableCopy() ?: return Result.success()
-        if (bucketedData.isEmpty()) {
-            aapsLogger.debug("No bucketed data.")
+        // The overview follows the full source cadence. The five-minute bucketed series remains
+        // reserved for autosens/COB and loop scheduling.
+        val displayData = data.iobCobCalculator.ads.getSmoothedDataTableCopy()
+            ?: data.iobCobCalculator.ads.getBucketedDataTableCopy()
+            ?: return Result.success()
+        if (displayData.isEmpty()) {
+            aapsLogger.debug("No smoothed display data.")
             return Result.success()
         }
         val bucketedListArray: MutableList<DataPointWithLabelInterface> = ArrayList()
-        for (inMemoryGlucoseValue in bucketedData) {
+        for (inMemoryGlucoseValue in displayData) {
             if (inMemoryGlucoseValue.timestamp < fromTime || inMemoryGlucoseValue.timestamp > toTime) continue
             bucketedListArray.add(InMemoryGlucoseValueDataPoint(inMemoryGlucoseValue, preferences, profileFunction, rh))
         }

@@ -28,7 +28,7 @@ class InMemoryGlucoseValueDataPoint(
     override val label: String = ""
     override val duration = 0L
     override val shape = Shape.BUCKETED_BG
-    override val size = 1f
+    override val size = 0.5f
     override val paintStyle: Paint.Style = Paint.Style.FILL
 
     @ColorInt

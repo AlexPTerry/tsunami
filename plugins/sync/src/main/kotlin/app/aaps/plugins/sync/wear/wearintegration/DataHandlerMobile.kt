@@ -1171,7 +1171,7 @@ class DataHandlerMobile @Inject constructor(
     fun resendData(from: String) {
         aapsLogger.debug(LTag.WEAR, "Sending data to wear from $from")
         // SingleBg
-        iobCobCalculator.ads.lastBg()?.let { rxBus.send(EventMobileToWear(getSingleBG(it))) }
+        iobCobCalculator.ads.lastDisplayBg()?.let { rxBus.send(EventMobileToWear(getSingleBG(it))) }
         // Preferences
         rxBus.send(
             EventMobileToWear(
@@ -1200,8 +1200,8 @@ class DataHandlerMobile @Inject constructor(
         //UserAction
         sendUserActions()
         // GraphData
-        iobCobCalculator.ads.getBucketedDataTableCopy()?.let { bucketedData ->
-            rxBus.send(EventMobileToWear(EventData.GraphData(ArrayList(bucketedData.map { getSingleBG(it) }))))
+        (iobCobCalculator.ads.getSmoothedDataTableCopy() ?: iobCobCalculator.ads.getBucketedDataTableCopy())?.let { displayData ->
+            rxBus.send(EventMobileToWear(EventData.GraphData(ArrayList(displayData.map { getSingleBG(it) }))))
         }
         // Treatments
         sendTreatments()

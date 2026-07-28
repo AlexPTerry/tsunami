@@ -121,7 +121,7 @@ class PersistentNotificationPlugin @Inject constructor(
         var unreadConversationBuilder: NotificationCompat.CarExtender.UnreadConversation.Builder? = null
         if (profileFunction.isProfileValid("Notification")) {
             var line1aa: String
-            val lastBG = iobCobCalculator.ads.lastBg()
+            val lastBG = iobCobCalculator.ads.lastDisplayBg()
             val glucoseStatus = glucoseStatusProvider.glucoseStatusData
             if (lastBG != null) {
                 line1aa = profileUtil.fromMgdlToStringInUnits(lastBG.recalculated)

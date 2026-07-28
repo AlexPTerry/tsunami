@@ -368,8 +368,8 @@ class SmsCommunicatorPlugin @Inject constructor(
     }
 
     private fun processBG(receivedSms: Sms) {
-        val actualBG = iobCobCalculator.ads.actualBg()
-        val lastBG = iobCobCalculator.ads.lastBg()
+        val actualBG = iobCobCalculator.ads.actualDisplayBg()
+        val lastBG = iobCobCalculator.ads.lastDisplayBg()
         var reply = ""
         val units = profileUtil.units
         if (actualBG != null) {

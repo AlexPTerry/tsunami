@@ -28,7 +28,7 @@ class LastBgDataImpl @Inject constructor(
 ) : LastBgData {
 
     override fun lastBg(): InMemoryGlucoseValue? =
-        iobCobCalculator.ads.bucketedData?.firstOrNull()
+        iobCobCalculator.ads.lastDisplayBg()
             ?: persistenceLayer.getLastGlucoseValue()?.let { InMemoryGlucoseValue.fromGv(it) }
 
     override fun isLow(): Boolean =

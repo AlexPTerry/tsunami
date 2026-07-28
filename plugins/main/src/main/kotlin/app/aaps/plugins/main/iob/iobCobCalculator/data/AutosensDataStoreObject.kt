@@ -41,16 +41,22 @@ class AutosensDataStoreObject : AutosensDataStore {
         @Synchronized set
         @Synchronized get
 
+    override var smoothedData: MutableList<InMemoryGlucoseValue>? = null
+        @Synchronized set
+        @Synchronized get
+
     override fun clone(): AutosensDataStore =
         AutosensDataStoreObject().also {
             synchronized(dataLock) {
                 it.bgReadings = this.bgReadings.toMutableList()
                 it.autosensDataTable = LongSparseArray<AutosensData>(this.autosensDataTable.size).apply { putAll(this@AutosensDataStoreObject.autosensDataTable) }
+                it.smoothedData = this.smoothedData?.map { value -> value.copy() }?.toMutableList()
                 it.bucketedData = this.bucketedData?.toMutableList()
             }
         }
 
     override fun getBucketedDataTableCopy(): MutableList<InMemoryGlucoseValue>? = synchronized(dataLock) { bucketedData?.toMutableList() }
+    override fun getSmoothedDataTableCopy(): MutableList<InMemoryGlucoseValue>? = synchronized(dataLock) { smoothedData?.map { it.copy() }?.toMutableList() }
     override fun getBgReadingsDataTableCopy(): List<GV> = synchronized(dataLock) { bgReadings.toMutableList() }
 
     override fun reset() {
@@ -95,6 +101,16 @@ class AutosensDataStoreObject : AutosensDataStore {
      */
     override fun actualBg(): InMemoryGlucoseValue? {
         val lastBg = lastBg() ?: return null
+        return if (lastBg.timestamp > System.currentTimeMillis() - T.mins(9).msecs()) lastBg else null
+    }
+
+    override fun lastDisplayBg(): InMemoryGlucoseValue? =
+        synchronized(dataLock) {
+            smoothedData?.firstOrNull() ?: bucketedData?.firstOrNull()
+        }
+
+    override fun actualDisplayBg(): InMemoryGlucoseValue? {
+        val lastBg = lastDisplayBg() ?: return null
         return if (lastBg.timestamp > System.currentTimeMillis() - T.mins(9).msecs()) lastBg else null
     }
 

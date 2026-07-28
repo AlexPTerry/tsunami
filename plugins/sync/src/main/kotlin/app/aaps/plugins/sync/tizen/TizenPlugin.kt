@@ -116,7 +116,7 @@ class TizenPlugin @Inject constructor(
     }
 
     private fun bgStatus(bundle: Bundle) {
-        val lastBG = iobCobCalculator.ads.lastBg() ?: return
+        val lastBG = iobCobCalculator.ads.lastDisplayBg() ?: return
         val glucoseStatus = glucoseStatusProvider.glucoseStatusData ?: return
 
         bundle.putDouble("glucoseMgdl", lastBG.recalculated)   // last BG in mgdl

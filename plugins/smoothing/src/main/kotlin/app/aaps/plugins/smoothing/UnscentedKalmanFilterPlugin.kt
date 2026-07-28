@@ -22,8 +22,6 @@ import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
-import kotlin.math.exp
-import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -115,10 +113,9 @@ class UnscentedKalmanFilterPlugin @Inject constructor(
     private val R_MIN = 16.0    // ~2 mg/dL std dev - excellent sensor
     //private val R_MAX = 144.0   // Max ~12 mg/dl std dev permissible - poor sensor; cap prevents filter from losing trust in sensor entirely
     private val R_MAX = 196.0
-    private val R_EFF_MAX = 400.0
+    private val R_EFF_MAX = 2000.0
     // R adaptation parameters
-    private val innovationWindow = 48  // 150 minutes for stable statistics
-    private val RATE_DAMPING = 0.98         // 6% rate decay per step
+    private val innovationWindow = 48  // Four hours at the five-minute adaptation cadence
 
     // Chi-squared based outlier detection (99.99% confidence, 1 DOF)
     private val CHI_SQUARED_THRESHOLD = 15.13  // Statistically rigorous
@@ -133,12 +130,11 @@ class UnscentedKalmanFilterPlugin @Inject constructor(
     private val INNOVATION_VALIDATION_SAMPLES = 15  // Need 15 samples before validating
 
     // Gap handling
-    private val MINOR_GAP_THRESHOLD = 7.0      // Minutes - bridge with prediction
+    private val MINOR_GAP_THRESHOLD = 7.0      // Minutes - log an extended prediction
     private val MAJOR_GAP_THRESHOLD = 60.0     // Minutes - segment data
-    private val RATE_DECAY_TIME_CONSTANT = 30.0  // Minutes - physiological decay
 
     // Processing limits
-    private val MAX_FILTER_WINDOW = 8640  // 30 days at 5-min intervals
+    private val FILTER_MODEL_VERSION = 2
 
     // ============================================================
     // DATA STRUCTURES
@@ -221,8 +217,9 @@ class UnscentedKalmanFilterPlugin @Inject constructor(
         try {
             val lastSaved = sp.getLong("ukf_last_saved_timestamp", 0L)
             val savedSensorChange = sp.getLong("ukf_sensor_change_timestamp", 0L)
+            val savedModelVersion = sp.getInt("ukf_model_version", 1)
 
-            if (lastSaved > 0) {
+            if (lastSaved > 0 && savedModelVersion == FILTER_MODEL_VERSION) {
                 lastSensorChangeTimestamp = savedSensorChange
                 lastProcessedTimestamp = sp.getLong("ukf_last_processed_timestamp", 0L)
                 learnedR = sp.getDouble("ukf_learned_r", R_INIT)
@@ -238,6 +235,11 @@ class UnscentedKalmanFilterPlugin @Inject constructor(
                     "(R=${String.format("%.1f", learnedR)}, " +
                     "Q_glucose=${String.format("%.2f", Q_FIXED[0])} [FIXED], " +
                     "Q_rate=${String.format("%.4f", Q_FIXED[3])} [FIXED])")
+            } else if (lastSaved > 0) {
+                aapsLogger.info(
+                    LTag.GLUCOSE,
+                    "UKF: Ignoring parameters from model version $savedModelVersion; initializing cadence-aware model $FILTER_MODEL_VERSION"
+                )
             }
         } catch (e: Exception) {
             aapsLogger.error(LTag.GLUCOSE, "UKF: Failed to load persisted parameters", e)
@@ -258,6 +260,7 @@ private fun savePersistedParameters() {
         sp.putLong("ukf_last_processed_timestamp", lastProcessedTimestamp)
         sp.putDouble("ukf_learned_r", learnedR)
         sp.putInt("ukf_session_id", sensorSessionId)
+        sp.putInt("ukf_model_version", FILTER_MODEL_VERSION)
 
             aapsLogger.debug(LTag.GLUCOSE, "UKF: Saved learned R for session $sensorSessionId")
         } catch (e: Exception) {
@@ -413,6 +416,7 @@ private fun savePersistedParameters() {
     private fun resetLearning() {
         learnedR = R_INIT
         innovations.clear()
+        rawInnovationVariance.clear()
         sensorSessionId++
         sessionMeasurementCount = 0
         sessionOutlierCount = 0
@@ -458,7 +462,12 @@ private fun savePersistedParameters() {
             val timeDiff = (data[i].timestamp - data[i + 1].timestamp) / (1000.0 * 60.0)
 
             // Segment at major gaps (>60 min)
-            if (timeDiff > MAJOR_GAP_THRESHOLD || timeDiff < 2.0 || data[i].value == 38.0) {
+            if (
+                timeDiff > MAJOR_GAP_THRESHOLD ||
+                timeDiff < UkfCadenceModel.MINIMUM_INTERVAL_MINUTES ||
+                data[i].value <= 38.0 ||
+                data[i + 1].value <= 38.0
+            ) {
                 // Close current segment if it has enough points
                 if (i - segmentStart >= 2) {
                     segments.add(DataSegment(segmentStart, i))
@@ -506,7 +515,7 @@ private fun savePersistedParameters() {
 
         // Fill any unprocessed points with raw values
         for (i in data.indices) {
-            if (data[i].smoothed == 0.0) {  // Not yet processed
+            if (data[i].smoothed == null) {  // Not yet processed
                 data[i].smoothed = max(data[i].value, 39.0)
                 data[i].trendArrow = TrendArrow.NONE
             }
@@ -558,6 +567,33 @@ private fun savePersistedParameters() {
      * Process a single continuous segment of data
      * Runs forward filter + backward smoother on segment only
      */
+    private fun estimateInitialRate(
+        data: List<InMemoryGlucoseValue>,
+        startIdx: Int,
+        endIdx: Int
+    ): Double {
+        val oldestTimestamp = data[endIdx].timestamp
+        val samples = mutableListOf<Pair<Double, Double>>()
+
+        for (i in endIdx downTo startIdx) {
+            val minutesFromOldest = (data[i].timestamp - oldestTimestamp) / (1000.0 * 60.0)
+            if (minutesFromOldest > 10.0) break
+            if (data[i].value > 38.0) samples.add(minutesFromOldest to data[i].value)
+        }
+        if (samples.size < 2) return 0.0
+
+        val meanTime = samples.map { it.first }.average()
+        val meanGlucose = samples.map { it.second }.average()
+        var covariance = 0.0
+        var timeVariance = 0.0
+        for ((time, glucose) in samples) {
+            covariance += (time - meanTime) * (glucose - meanGlucose)
+            timeVariance += (time - meanTime) * (time - meanTime)
+        }
+
+        return if (timeVariance > 1e-9) (covariance / timeVariance).coerceIn(-4.0, 4.0) else 0.0
+    }
+
     private fun processSegment(
         data: MutableList<InMemoryGlucoseValue>,
         startIdx: Int,  // Newest point in segment
@@ -573,15 +609,7 @@ private fun savePersistedParameters() {
 
         // Initialize state from oldest point in segment
         val initialGlucose = data[endIdx].value
-        var initialRate = 0.0
-
-        if (segmentSize >= 2 && endIdx > 0) {
-            val dt = (data[endIdx - 1].timestamp - data[endIdx].timestamp) / (1000.0 * 60.0)
-            if (dt in 3.0..7.0) {
-                initialRate = (data[endIdx - 1].value - data[endIdx].value) / dt
-                initialRate = initialRate.coerceIn(-4.0, 4.0)
-            }
-        }
+        val initialRate = estimateInitialRate(data, startIdx, endIdx)
 
         val x = doubleArrayOf(initialGlucose, initialRate)
         val P = doubleArrayOf(16.0, 0.0, 0.0, 1.0)
@@ -595,22 +623,16 @@ private fun savePersistedParameters() {
         var segmentNewMeasurements = 0
         var segmentOutliers = 0
 
-        // Tracks persistence to distinguish real dynamics from single-sample artifacts.
-        // Incremented only when normalized innovation is large and same sign as previous.
-        var consecutiveLargeSameSign = 0
+        // Tracks elapsed persistence to keep outlier handling consistent across cadences.
+        var largeSameSignDurationMinutes = 0.0
         var lastNormInnovSign = 0
 
         // === FORWARD PASS (within segment only) ===
         for (i in (endIdx - 1) downTo startIdx) {
             val dt = (data[i].timestamp - data[i + 1].timestamp) / (1000.0 * 60.0)
 
-            // Handle minor gaps within segment
+            // The cadence model propagates F and Q over the complete gap in one step.
             if (dt > MINOR_GAP_THRESHOLD && dt <= MAJOR_GAP_THRESHOLD) {
-                val qScale = dt / 5.0
-                P[0] = min(P[0] + Q[0] * qScale, MAX_GLUCOSE_VARIANCE)
-                P[3] = min(P[3] + Q[3] * qScale, MAX_RATE_VARIANCE)
-                x[1] *= exp(-dt / RATE_DECAY_TIME_CONSTANT)
-
                 aapsLogger.debug(LTag.GLUCOSE,
                                  "UKF: Bridging ${String.format("%.1f", dt)} min gap within segment")
             }
@@ -619,10 +641,10 @@ private fun savePersistedParameters() {
             P[0] = P[0].coerceIn(0.1, MAX_GLUCOSE_VARIANCE)
             P[3] = P[3].coerceIn(0.001, MAX_RATE_VARIANCE)
 
-            val dtClamped = dt.coerceIn(3.5, 6.5)
-            val (xPred, PPred) = predict(x, P, Q, dtClamped)
+            val dtEffective = dt.coerceAtLeast(UkfCadenceModel.MINIMUM_INTERVAL_MINUTES)
+            val (xPred, PPred) = predict(x, P, Q, dtEffective)
 
-            val stateBefore = FilterState(x.copyOf(), P.copyOf(), xPred.copyOf(), PPred.copyOf(), dtClamped)
+            val stateBefore = FilterState(x.copyOf(), P.copyOf(), xPred.copyOf(), PPred.copyOf(), dtEffective)
 
             val z = data[i].value
 
@@ -641,7 +663,8 @@ private fun savePersistedParameters() {
             }
 
             val innovation = z - xPred[0]
-            val innovationVariance = PPred[0] + R
+            val cadenceR = UkfCadenceModel.measurementNoise(R, dtEffective)
+            val innovationVariance = PPred[0] + cadenceR
             val std = sqrt(innovationVariance)
             val norm = innovation / std
             val mahalSq = (innovation * innovation) / innovationVariance
@@ -654,11 +677,11 @@ private fun savePersistedParameters() {
                 else -> 0
             }
             if (abs(norm) > 3.0 && sign != 0 && sign == lastNormInnovSign) {
-                consecutiveLargeSameSign += 1          // CHANGED: persistence requirement for Q inflation
+                largeSameSignDurationMinutes += dtEffective
             } else if (abs(norm) > 3.0 && sign != 0) {
-                consecutiveLargeSameSign = 1
+                largeSameSignDurationMinutes = 0.0
             } else {
-                consecutiveLargeSameSign = 0
+                largeSameSignDurationMinutes = 0.0
             }
             lastNormInnovSign = sign
 
@@ -666,10 +689,10 @@ private fun savePersistedParameters() {
             // 1) Inflate R per innovation to always accept the sample with reduced gain if it looks outlying.
             // 2) Temporarily inflate Q_rate (and modestly Q_glucose) only if large deviations persist (>=2, same sign).
             val rScale = max(1.0, mahalSq / CHI_SQUARED_THRESHOLD)      // CHANGED: per-innovation R scaling
-            val R_eff = min(R * rScale, R_EFF_MAX)                      // bounded effective R
+            val R_eff = min(cadenceR * rScale, R_EFF_MAX)                // bounded effective R
 
             // Decide Q inflation based on persistence to protect against single-sample compression lows.
-            val qInflateAllowed = consecutiveLargeSameSign >= 2          // CHANGED: persistence guard
+            val qInflateAllowed = largeSameSignDurationMinutes >= UkfCadenceModel.NOMINAL_INTERVAL_MINUTES
             val zScore = abs(norm).coerceAtLeast(1.0)
             val qScale = if (qInflateAllowed) zScore.coerceIn(1.0, 3.0) else 1.0
 
@@ -684,16 +707,20 @@ private fun savePersistedParameters() {
             }
 
             // Re-predict with tempQ (if inflated) to let the slope pivot, then update with R_eff.
-            val (xPredEff, PPredEff) = if (qScale > 1.0) predict(x, P, tempQ, dtClamped) else Pair(xPred, PPred)
+            val (xPredEff, PPredEff) = if (qScale > 1.0) predict(x, P, tempQ, dtEffective) else Pair(xPred, PPred)
 
             // Always update; never skip. CHANGED: removes multi-sample lock-out.
             update(xPredEff, PPredEff, z, R_eff, x, P)
 
             // Track innovation stats for adaptive R; skip adapting R on very large deviations to avoid mislearning on artifacts.
-            trackInnovation(innovation, innovationVariance)
-            val skipRUpdate = abs(norm) > 3.0
-            if (!skipRUpdate) {
-                R = adaptMeasurementNoise(R, innovations, rawInnovationVariance)
+            // Keep learned R on its established five-minute basis until representative
+            // one-minute innovations are available for sensor-specific tuning.
+            if (dtEffective >= 3.5) {
+                trackInnovation(innovation, PPred[0] + R)
+                val skipRUpdate = abs(norm) > 3.0
+                if (!skipRUpdate) {
+                    R = adaptMeasurementNoise(R, innovations, rawInnovationVariance)
+                }
             }
             if (mahalSq > CHI_SQUARED_THRESHOLD || abs(innovation) > OUTLIER_ABSOLUTE) {
                 aapsLogger.debug(LTag.GLUCOSE,
@@ -875,11 +902,12 @@ private fun savePersistedParameters() {
      * @return Smoother gain matrix C (2x2 in row-major)
      */
     private fun computeSmootherGain(P: DoubleArray, PPred: DoubleArray, dt: Double): DoubleArray {
+        val transition = UkfCadenceModel.transition(dt)
         // Compute P * F^T
-        val PFt00 = P[0] + P[1] * dt
-        val PFt01 = P[1] * RATE_DAMPING
-        val PFt10 = P[2] + P[3] * dt
-        val PFt11 = P[3] * RATE_DAMPING
+        val PFt00 = P[0] + P[1] * transition.glucoseFromRate
+        val PFt01 = P[1] * transition.rateDamping
+        val PFt10 = P[2] + P[3] * transition.glucoseFromRate
+        val PFt11 = P[3] * transition.rateDamping
 
         // Invert PPred (2x2 matrix inversion)
         val det = PPred[0] * PPred[3] - PPred[1] * PPred[2]
@@ -921,11 +949,12 @@ private fun savePersistedParameters() {
         // Generate sigma points
         val sigmaPoints = generateSigmaPoints(x, P)
         val sigmaPointsPred = Array(2 * n + 1) { DoubleArray(n) }
+        val transition = UkfCadenceModel.transition(dt)
 
         // Propagate each sigma point through process model
         for (i in 0 until 2 * n + 1) {
-            sigmaPointsPred[i][0] = sigmaPoints[i][0] + sigmaPoints[i][1] * dt  // Glucose: G + Ġ*dt
-            sigmaPointsPred[i][1] = sigmaPoints[i][1] * RATE_DAMPING            // Rate: Ġ*damping
+            sigmaPointsPred[i][0] = sigmaPoints[i][0] + sigmaPoints[i][1] * transition.glucoseFromRate
+            sigmaPointsPred[i][1] = sigmaPoints[i][1] * transition.rateDamping
         }
 
         // Compute predicted mean: x̄ = Σ W_i^(m) * χ_i
@@ -946,10 +975,13 @@ private fun savePersistedParameters() {
             PPred[3] += Wc[i] * dx1 * dx1
         }
 
-        // Add process noise (scaled linearly with time)
-        val qScale = dt / 5.0
-        PPred[0] += Q[0] * qScale
-        PPred[3] += Q[3] * qScale
+        // Add cadence-consistent process noise. At dt=5 this is exactly Q; subdividing
+        // an interval composes to the same covariance, including glucose/rate coupling.
+        val elapsedQ = UkfCadenceModel.processNoise(Q, dt)
+        PPred[0] += elapsedQ[0]
+        PPred[1] += elapsedQ[1]
+        PPred[2] += elapsedQ[2]
+        PPred[3] += elapsedQ[3]
 
         // Ensure positive definiteness
         PPred[0] = max(PPred[0], 0.1)

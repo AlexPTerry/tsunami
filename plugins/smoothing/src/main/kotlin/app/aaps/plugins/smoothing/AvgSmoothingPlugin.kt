@@ -12,7 +12,6 @@ import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.smoothing.Smoothing
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.abs
 
 @Singleton
 class AvgSmoothingPlugin @Inject constructor(
@@ -34,26 +33,35 @@ class AvgSmoothingPlugin @Inject constructor(
             return data
         }
 
-        for (i in data.lastIndex - 1 downTo 1) {
-            // Check if value's are in a valid range
-            // Bucketed is always calculated to 5 min, we still check if our data is evenly spaced with an allowance of 30 seconds
-            if (isValid(data[i].value) && isValid(data[i - 1].value) && isValid(data[i + 1].value)
-                && abs(data[i].timestamp - data[i - 1].timestamp - (data[i + 1].timestamp - data[i].timestamp)) < T.secs(30).msecs()
-            ) {
-                // We could further improve this by adding a weight to the neighbours, for simplicity this is not done.
-                data[i].smoothed = ((data[i - 1].value + data[i].value + data[i + 1].value) / 3.0)
+        for (i in data.indices) {
+            val newerValue = interpolateValue(data, data[i].timestamp + T.mins(5).msecs())
+            val olderValue = interpolateValue(data, data[i].timestamp - T.mins(5).msecs())
+            if (isValid(data[i].value) && newerValue != null && olderValue != null && isValid(newerValue) && isValid(olderValue)) {
+                // Sample the same +/- five-minute window regardless of source cadence.
+                // On regular five-minute data this is identical to the legacy three-point average.
+                data[i].smoothed = (newerValue + data[i].value + olderValue) / 3.0
                 data[i].trendArrow = TrendArrow.NONE
             } else {
-                // data[i].smoothed = data[i].value
                 val currentTime = data[i].timestamp
                 val value = data[i].value
                 aapsLogger.debug(LTag.GLUCOSE, "Value: $value at $currentTime not smoothed")
             }
         }
-        // We leave the data we can not smooth as is, alternatively we could provide raw value's to the smoothed value's:
-        // data[data.lastIndex].smoothed = data[data.lastIndex].value
-        // data[0].smoothed = data[0].value
         return data
+    }
+
+    private fun interpolateValue(data: List<InMemoryGlucoseValue>, timestamp: Long): Double? {
+        val olderIndex = data.indexOfFirst { it.timestamp <= timestamp }
+        if (olderIndex < 0) return null
+        val older = data[olderIndex]
+        if (older.timestamp == timestamp) return older.value
+        if (olderIndex == 0) return null
+
+        val newer = data[olderIndex - 1]
+        val interval = newer.timestamp - older.timestamp
+        if (interval <= 0L || interval > T.mins(12).msecs()) return null
+        val fraction = (timestamp - older.timestamp).toDouble() / interval
+        return older.value + fraction * (newer.value - older.value)
     }
 
     private fun isValid(n: Double): Boolean {

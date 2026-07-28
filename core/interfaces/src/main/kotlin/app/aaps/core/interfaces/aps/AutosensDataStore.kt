@@ -12,6 +12,13 @@ interface AutosensDataStore {
 
     var bgReadings: List<GV>
     var autosensDataTable: LongSparseArray<AutosensData>
+    /**
+     * Complete timestamped glucose stream after applying the active smoothing plugin.
+     *
+     * Unlike [bucketedData], this list retains the source cadence (for example one-minute
+     * Libre readings) and must not be used as the five-minute autosens/loop clock.
+     */
+    var smoothedData: MutableList<InMemoryGlucoseValue>?
     var bucketedData: MutableList<InMemoryGlucoseValue>?
     var lastUsed5minCalculation: Boolean?
 
@@ -28,12 +35,15 @@ interface AutosensDataStore {
      * @return InMemoryGlucoseValue or null
      */
     fun actualBg(): InMemoryGlucoseValue?
+    fun lastDisplayBg(): InMemoryGlucoseValue?
+    fun actualDisplayBg(): InMemoryGlucoseValue?
     fun lastDataTime(dateUtil: DateUtil): String
     fun clone(): AutosensDataStore
     fun getBgReadingsDataTableCopy(): List<GV>
     fun getLastAutosensData(reason: String, aapsLogger: AAPSLogger, dateUtil: DateUtil): AutosensData?
     fun getAutosensDataAtTime(fromTime: Long): AutosensData?
     fun getBucketedDataTableCopy(): MutableList<InMemoryGlucoseValue>?
+    fun getSmoothedDataTableCopy(): MutableList<InMemoryGlucoseValue>?
     fun createBucketedData(aapsLogger: AAPSLogger, dateUtil: DateUtil)
     fun slowAbsorptionPercentage(timeInMinutes: Int): Double
     fun newHistoryData(time: Long, aapsLogger: AAPSLogger, dateUtil: DateUtil)
